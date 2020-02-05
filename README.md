@@ -1,6 +1,6 @@
 # AMQ Streams (Kafka) RBAC Enforcement with OAUTH2 and LDAP
 
-This project demonstrates how to setup and configure an AMQ Streams cluster on OpenShift with client RBAC enforcement (authentication only).
+This project demonstrates how to setup and configure an AMQ Streams cluster on OpenShift with client RBAC enforcement (authentication only) using RH-SSO (Keycloak).
 
 ![AMQ Streams RBAC Enforcement with OAUTH2 Diagram](images/streams-oauth.png)
 
@@ -14,69 +14,103 @@ The following product / OS prerequisities exist:
 
 ## Procedure
 
-### Setup RH-SSO with custom self-signed keystore / truststore
+### Setup RH-SSO with custom self-signed keystore / truststore for HTTPS and JGroups
 
-To get things started, we need to setup a master / slave broker cluster and ensure it works correctly with shared-nothing replication.
+To get things started, we need to install on RH-SSO on OCP.  For the purposes of this demo, I'm using the stateless option (ethemeral) and am creating my own keystore and truststore.
 
-1. Follow the [instructions](https://github.com/jbossdemocentral/amq-ha-replicated-demo) for setting-up an AMQ 7 shared-nothing replication master / slave cluster.  You will need to increment the product version to `7.0.3` in the `init.sh` script contained in the project.
-2. Update the Acceptor section of `/amq-broker-7.0.3/instances/replicatedMaster/etc/broker.xml` so we're listening on the correct network adapter:
+1. Via the CLI, create a new OCP project: `oc new-project streams-oauth`.
 
-```
-
-      <acceptors>
-
-         <!-- Acceptor for every supported protocol -->
-         <acceptor name="artemis">tcp://0.0.0.0:61616?tcpSendBufferSize=1048576;tcpReceiveBufferSize=1048576;protocols=CORE,AMQP,STOMP,HORNETQ,MQTT,OPENWIRE;useEpoll=true;amqpCredits=1000;amqpLowCredits=300</acceptor>
-
-         <!-- AMQP Acceptor.  Listens on default AMQP port for AMQP traffic.-->
-         <acceptor name="amqp">tcp://0.0.0.0:5673?tcpSendBufferSize=1048576;tcpReceiveBufferSize=1048576;protocols=AMQP;useEpoll=true;amqpCredits=1000;amqpMinCredits=300</acceptor>
-
-         <!-- STOMP Acceptor. -->
-         <acceptor name="stomp">tcp://0.0.0.0:61613?tcpSendBufferSize=1048576;tcpReceiveBufferSize=1048576;protocols=STOMP;useEpoll=true</acceptor>
-
-         <!-- HornetQ Compatibility Acceptor.  Enables HornetQ Core and STOMP for legacy HornetQ clients. -->
-         <acceptor name="hornetq">tcp://0.0.0.0:5445?protocols=HORNETQ,STOMP;useEpoll=true</acceptor>
-
-         <!-- MQTT Acceptor -->
-         <acceptor name="mqtt">tcp://0.0.0.0:1883?tcpSendBufferSize=1048576;tcpReceiveBufferSize=1048576;protocols=MQTT;useEpoll=true</acceptor>
-
-      </acceptors>
-```
-3. Do the same for `/amq-broker-7.0.3/instances/replicatedSlave/etc/broker.xml`:
+2. Via the CLI, enter the following to generate a CA certificate:
 
 ```
-
-      <acceptors>
-
-         <!-- useEpoll means: it will use Netty epoll if you are on a system (Linux) that supports it -->
-         <!-- amqpCredits: The number of credits sent to AMQP producers -->
-         <!-- amqpLowCredits: The server will send the # credits specified at amqpCredits at this low mark -->
-
-         <!-- Acceptor for every supported protocol -->
-         <acceptor name="artemis">tcp://0.0.0.0:61716?tcpSendBufferSize=1048576;tcpReceiveBufferSize=1048576;protocols=CORE,AMQP,STOMP,HORNETQ,MQTT,OPENWIRE;useEpoll=true;amqpCredits=1000;amqpLowCredits=300</acceptor>
-
-         <!-- AMQP Acceptor.  Listens on default AMQP port for AMQP traffic.-->
-         <acceptor name="amqp">tcp://0.0.0.0:5772?tcpSendBufferSize=1048576;tcpReceiveBufferSize=1048576;protocols=AMQP;useEpoll=true;amqpCredits=1000;amqpMinCredits=300</acceptor>
-
-         <!-- STOMP Acceptor. -->
-         <acceptor name="stomp">tcp://0.0.0.0:61713?tcpSendBufferSize=1048576;tcpReceiveBufferSize=1048576;protocols=STOMP;useEpoll=true</acceptor>
-
-         <!-- HornetQ Compatibility Acceptor.  Enables HornetQ Core and STOMP for legacy HornetQ clients. -->
-         <acceptor name="hornetq">tcp://0.0.0.0:5545?protocols=HORNETQ,STOMP;useEpoll=true</acceptor>
-
-         <!-- MQTT Acceptor -->
-         <acceptor name="mqtt">tcp://0.0.0.0:1983?tcpSendBufferSize=1048576;tcpReceiveBufferSize=1048576;protocols=MQTT;useEpoll=true</acceptor>
-
-      </acceptors>
+openssl req -new -newkey rsa:4096 -x509 -keyout xpaas.key -out xpaas.crt -days 365 -subj "/CN=xpaas-sso-demo.ca"
 ```
-4. Update `/amq-broker-7.0.3/instances/replicatedMaster/etc/bootstrap.xml` and `/amq-broker-7.0.3/instances/replicatedMaster/etc/bootstrap.xml` so that the web bind address is listening on the correct host e.g. `<web bind="http://0.0.0.0:XXXX" path="web">`
-5. Test your setup as described in the instructions, ensuring that master / slave failover occurs as expected.  Ensure you can access both HawtIO consoles (on port 8161 + 8261).
-6. For an additional test, try sending an AMQP message to either port 5673 (master) or 5772 (slave) depending on which broker is active.  You can use the following command for this:
-```
-qsend amqp://127.0.0.1:5673/haQueue -m Abc
-```
-If you browse for the message via HawtIO, you'll notice that Durable=false.  This means the message will disappear during failover and won't be replicated.  The test in step 5. was Durable=true, therefore the message should have been replicated
 
+3. Via the CLI, generate a CA certificate for the HTTPS keystore (using `password` as the keystore password):
+
+```
+keytool -genkeypair -keyalg RSA -keysize 2048 -dname "CN=oauth-demo.tiaa-ad83.open.redhat.com" -alias jboss -keystore keystore.jks
+```
+
+4. Generate a CSR for the HTTPS keystore (using `password` as the keystore password):
+
+```
+keytool -certreq -keyalg rsa -alias jboss -keystore keystore.jks -file sso.csr
+```
+
+5. Sign the CSR using `password`:
+
+```
+openssl x509 -req -CA xpaas.crt -CAkey xpaas.key -in sso.csr -out sso.crt -days 365 -CAcreateserial
+```
+
+6. Import the the CA certificate into the HTTPS keystore:
+
+```
+keytool -import -file xpaas.crt -alias xpaas.ca -keystore keystore.jks
+```
+
+7. Import the signed CSR into the HTTPS keystore (using `password` as the keystore password):
+
+```
+keytool -import -file sso.crt -alias jboss -keystore keystore.jks
+```
+
+8. Generate a secure key for the JGroups keystore:
+
+```
+keytool -genseckey -alias secret-key -storetype JCEKS -keystore jgroups.jceks
+```
+
+9. Import the CA cert into a new SSO truststore (using `password` as the keystore password):
+
+```
+keytool -import -file xpaas.crt -alias xpaas.ca -keystore truststore.jks
+```
+
+10. Create the secrets for the HTTPS and JGroups keystores:
+
+```
+oc secret new sso-app-secret keystore.jks jgroups.jceks truststore.jks
+```
+
+11. Link the secrets to the default service account:
+
+```
+oc secrets link default sso-app-secret
+```
+
+12. You can verify the keystores using the following commands:
+
+```
+keytool -v -list -keystore keystore.jks | grep Alias
+keytool -v -list -keystore jgroups.jceks -storetype jceks | grep Alias
+```
+
+13. Lastly, deploy RH-SSO:
+
+```
+oc new-app --template=sso73-https \
+ -p HTTPS_SECRET="sso-app-secret" \
+ -p HTTPS_KEYSTORE="keystore.jks" \
+ -p HTTPS_NAME="jboss" \
+ -p HTTPS_PASSWORD="password" \
+ -p JGROUPS_ENCRYPT_SECRET="sso-app-secret" \
+ -p JGROUPS_ENCRYPT_KEYSTORE="jgroups.jceks" \
+ -p JGROUPS_ENCRYPT_NAME="secret-key" \
+ -p JGROUPS_ENCRYPT_PASSWORD="password" \
+ -p SSO_ADMIN_USERNAME="admin" \
+ -p SSO_ADMIN_PASSWORD="password" \
+ -p SSO_TRUSTSTORE="truststore.jks" \
+ -p SSO_TRUSTSTORE_PASSWORD="password" \
+ -p SSO_TRUSTSTORE_SECRET="sso-app-secret"
+```
+
+14. You should receive the following output via the CLI:
+
+```
+blah
+```
 
 ### Test LDAP connectivity with your broker cluster
 

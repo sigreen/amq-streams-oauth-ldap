@@ -23,13 +23,13 @@ To get things started, we need to install on RH-SSO on OCP.  For the purposes of
 2. Via the CLI, enter the following to generate a CA certificate (using `password` as the PEM passphrase):
 
 ```
-openssl req -new -newkey rsa:4096 -x509 -keyout xpaas.key -out xpaas.crt -days 365 -subj "/CN=xpaas-sso-demo.ca"
+openssl req -new -newkey rsa:4096 -x509 -keyout xpaas.key -out xpaas.crt -days 365 -subj "/CN=redhat.com"
 ```
 
 3. Via the CLI, generate a CA certificate for the HTTPS keystore (using `password` as the keystore password):
 
 ```
-keytool -genkeypair -keyalg RSA -keysize 2048 -dname "CN=oauth-demo.tiaa-ad83.open.redhat.com" -alias jboss -keystore keystore.jks
+keytool -genkeypair -keyalg RSA -keysize 2048 -dname "CN=redhat.com" -alias jboss -keystore keystore.jks
 ```
 
 4. Generate a CSR for the HTTPS keystore (using `password` as the keystore password):
@@ -71,7 +71,7 @@ keytool -import -file xpaas.crt -alias xpaas.ca -keystore truststore.jks
 10. Create the secrets for the HTTPS and JGroups keystores:
 
 ```
-oc secret new sso-app-secret keystore.jks jgroups.jceks truststore.jks
+oc create secret sso-app-secret keystore.jks jgroups.jceks truststore.jks
 ```
 
 11. Link the secrets to the default service account:
@@ -181,7 +181,7 @@ sed -i '' 's/namespace: .*/namespace: streams-oauth/' install/cluster-operator/*
 oc apply -f install/cluster-operator -n streams-oauth
 ```
 
-4. Replace the <broker secret> with the client secret for `kafka-broker` in RH-SSO (on the *Credentials* tab), then execute the command via the CLI:
+4. Replace the ``<broker secret>`` with the client secret for `kafka-broker` in RH-SSO (on the *Credentials* tab), then execute the command via the CLI:
 
 ```
 oc create secret generic broker-oauth-secret -n streams-oauth --from-literal=secret=<broker-secret>

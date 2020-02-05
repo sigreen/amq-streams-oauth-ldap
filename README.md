@@ -1,8 +1,8 @@
-# AMQ Streams (Kafka) / RH-SSO (Keycloak) RBAC Enforcement with OAUTH2 and LDAP
+# AMQ Streams (Kafka) RBAC Enforcement with OAUTH2 and LDAP
 
 This project demonstrates how to setup and configure an AMQ Streams cluster on OpenShift with client RBAC enforcement (authentication only).
 
-![IC Router RBAC Enforcement with LDAP Diagram](images/logical-arch.png)
+![AMQ Streams RBAC Enforcement with OAUTH2 Diagram](images/streams-oauth.png)
 
 ## Prerequisites
 

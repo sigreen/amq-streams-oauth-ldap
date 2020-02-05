@@ -187,7 +187,13 @@ oc apply -f install/cluster-operator -n streams-oauth
 oc create secret generic broker-oauth-secret -n streams-oauth --from-literal=secret=<broker-secret>
 ```
 
-5. Deploy the AMQ Streams Zookeeper and Kafka brokers (but update the `validIssuerUri` and `jwksEndpointUri` to match your *hostname*):
+5. From the `conf/sso` directory, create the TLS (HTTPS) trusted cert used by RH-SSO via the CLI:
+
+```
+oc create secret generic ca-truststore --from-file=./xpaas.crt -n streams-oauth
+```
+
+6. Deploy the AMQ Streams Zookeeper and Kafka brokers (but update the `validIssuerUri` and `jwksEndpointUri` to match your *hostname*):
 
 ```
 cat << EOF | oc create -f -
@@ -212,6 +218,9 @@ spec:
           validIssuerUri: https://secure-sso-streams-oauth.apps.tiaa-ad83.open.redhat.com/auth/realms/master
           jwksEndpointUri: https://secure-sso-streams-oauth.apps.tiaa-ad83.open.redhat.com/auth/realms/master/protocol/openid-connect/certs
           userNameClaim: preferred_username
+          tlsTrustedCertificates:
+          - secretName: ca-truststore
+            certificate: xpaas.crt
     storage:
       type: ephemeral
   zookeeper:
@@ -224,13 +233,14 @@ spec:
 EOF
 ```
 
-6. Once both Kafka and Zookeeper pods have started, attempt sending a few test messages via port 9092 using local kafka client pods:
+7. Once both Kafka and Zookeeper pods have started, attempt sending a few test messages via port 9092 using local kafka client pods:
 
 ```
 oc run kafka-producer -ti --image=registry.redhat.io/amq7/amq-streams-kafka-23:1.3.0 --rm=true --restart=Never -- bin/kafka-console-producer.sh --broker-list my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9092 --topic my-topic
 
 oc run kafka-consumer -ti --image=registry.redhat.io/amq7/amq-streams-kafka-23:1.3.0 --rm=true --restart=Never -- bin/kafka-console-consumer.sh --bootstrap-server my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9092 --topic my-topic --from-beginning
 ```
+
 
 ### Setup Interconnect Router for SSL Client connections
 

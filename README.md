@@ -20,7 +20,7 @@ To get things started, we need to install on RH-SSO on OCP.  For the purposes of
 
 1. Via the CLI, create a new OCP project: `oc new-project streams-oauth`.
 
-2. Via the CLI, enter the following to generate a CA certificate:
+2. Via the CLI, enter the following to generate a CA certificate (using `password` as the PEM passphrase):
 
 ```
 openssl req -new -newkey rsa:4096 -x509 -keyout xpaas.key -out xpaas.crt -days 365 -subj "/CN=xpaas-sso-demo.ca"
@@ -109,39 +109,127 @@ oc new-app --template=sso73-https \
 14. You should receive the following output via the CLI:
 
 ```
-blah
+--> Deploying template "openshift/sso73-https" to project streams-oauth
+
+     Red Hat Single Sign-On 7.3 (Ephemeral with passthrough TLS)
+     ---------
+     An example application based on RH-SSO 7.3 image. For more information about using this template, see https://github.com/jboss-container-images/redhat-sso-7-openshift-image/docs.
+
+     A new RH-SSO service has been created in your project. The admin username/password for accessing the master realm via the RH-SSO console is admin/password. Please be sure to create the following secrets: "sso-app-secret" containing the keystore.jks file used for serving secure content; "sso-app-secret" containing the jgroups.jceks file used for securing JGroups communications; "sso-app-secret" containing the truststore.jks file used for securing RH-SSO requests.
+
+     * With parameters:
+        * Application Name=sso
+        * Custom http Route Hostname=
+        * Custom https Route Hostname=
+        * Custom RH-SSO Server Hostname=
+        * Server Keystore Secret Name=sso-app-secret
+        * Server Keystore Filename=keystore.jks
+        * Server Keystore Type=
+        * Server Certificate Name=jboss
+        * Server Keystore Password=password
+        * Datasource Minimum Pool Size=
+        * Datasource Maximum Pool Size=
+        * Datasource Transaction Isolation=
+        * JGroups Secret Name=sso-app-secret
+        * JGroups Keystore Filename=jgroups.jceks
+        * JGroups Certificate Name=secret-key
+        * JGroups Keystore Password=password
+        * JGroups Cluster Password=I4kq7RL8 # generated
+        * ImageStream Namespace=openshift
+        * RH-SSO Administrator Username=admin
+        * RH-SSO Administrator Password=password
+        * RH-SSO Realm=
+        * RH-SSO Service Username=
+        * RH-SSO Service Password=
+        * RH-SSO Trust Store=truststore.jks
+        * RH-SSO Trust Store Password=password
+        * RH-SSO Trust Store Secret=sso-app-secret
+        * Container Memory Limit=1Gi
+
+--> Creating resources ...
+    service "sso" created
+    service "secure-sso" created
+    service "sso-ping" created
+    route.route.openshift.io "sso" created
+    route.route.openshift.io "secure-sso" created
+    deploymentconfig.apps.openshift.io "sso" created
+--> Success
+    Access your application via route 'sso-streams-oauth.apps.tiaa-ad83.open.redhat.com'
+    Access your application via route 'secure-sso-streams-oauth.apps.tiaa-ad83.open.redhat.com'
+    Run 'oc status' to view your app.
 ```
 
-### Test LDAP connectivity with your broker cluster
+15. Once the RH-SSO pod starts up, you can access the Admin console via: `https://secure-sso-streams-oauth.apps.tiaa-ad83.open.redhat.com/auth/admin` and credentials u:admin p:password.
 
-Although we want to enforce RBAC at the IC router level, it's important to test out LDAP connectivity using our users / groups.  For this exercise, we'll use a single standalone broker instead of the cluster.
+16. Import the kafka clients + broker configuration by clicking on `Manage > Import` and selecting the `conf/sso/realm-export.json` file.  Be sure to regenerate the secret for `kafka-broker`, `kafka-consumer` and `kafka-producer`.
 
-1. Create a new broker instance using the following command:
+### Install and configure AMQ Streams
 
-```
-./bin/artemis create instances/adbroker
-```
+Now that RH-SSO is installed and we have the OAUTH2 clients setup, we need to install and configure AMQ Streams.
 
-Use admin/admin for credentials and type 'Y' for anonymous access
+1. Via the CLI, change to the `/conf/streams` directory.
 
-2. Replace the `etc/broker.xml`, `etc/bootstrap.xml` and `etc/login.config` files with those contained in this project (found in `/conf/broker/ldap`)
-
-3. Update the HawtIO role in artemis.profile with `-Dhawtio.role=admins`
-
-4. Startup the broker using `bin/artemis run`
-
-5. Test login to the HawtIO console using both your admin and user credentials.  Only the admin user should be authorized to enter the console.
-
-6. Test sending messages using a known username e.g. jdoe:
+2. Run the following command to update the namespace in each definition file:
 
 ```
-./bin/artemis producer --message-count 10 --url "tcp://127.0.0.1:61616" --destination queue://defQueue --user jdoe --password sunflower
+sed -i '' 's/namespace: .*/namespace: streams-oauth/' install/cluster-operator/*RoleBinding*.yaml
 ```
 
-7. Test consuming messages using a known username e.g. jdoe:
+3. Install the AMQ Streams cluster operator on OCP:
 
 ```
-./artemis consumer --message-count 10 --url "tcp://127.0.0.1:61616" --destination queue://defQueue --user jdoe --password sunflower
+oc apply -f install/cluster-operator -n streams-oauth
+```
+
+4. Replace the <broker secret> with the client secret for `kafka-broker` in RH-SSO (on the *Credentials* tab), then execute the command via the CLI:
+
+```
+oc create secret generic broker-oauth-secret -n streams-oauth --from-literal=secret=<broker-secret>
+```
+
+5. Deploy the AMQ Streams Zookeeper and Kafka brokers (but update the `validIssuerUri` and `jwksEndpointUri` to match your *hostname*):
+
+```
+cat << EOF | oc create -f -
+apiVersion: kafka.strimzi.io/v1alpha1
+kind: Kafka
+metadata:
+  name: my-cluster
+spec:
+  kafka:
+    replicas: 1
+    listeners:
+      external:
+        type: route
+      plain: {}
+      tls:
+        authentication:
+          type: oauth
+          clientId: kafka-broker
+          clientSecret:
+            key: secret
+            secretName: broker-oauth-secret
+          validIssuerUri: https://secure-sso-streams-oauth.apps.tiaa-ad83.open.redhat.com/auth/realms/master
+          jwksEndpointUri: https://secure-sso-streams-oauth.apps.tiaa-ad83.open.redhat.com/auth/realms/master/protocol/openid-connect/certs
+          userNameClaim: preferred_username
+    storage:
+      type: ephemeral
+  zookeeper:
+    replicas: 1
+    storage:
+      type: ephemeral
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+EOF
+```
+
+6. Once both Kafka and Zookeeper pods have started, attempt sending a few test messages via port 9092 using local kafka client pods:
+
+```
+oc run kafka-producer -ti --image=registry.redhat.io/amq7/amq-streams-kafka-23:1.3.0 --rm=true --restart=Never -- bin/kafka-console-producer.sh --broker-list my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9092 --topic my-topic
+
+oc run kafka-consumer -ti --image=registry.redhat.io/amq7/amq-streams-kafka-23:1.3.0 --rm=true --restart=Never -- bin/kafka-console-consumer.sh --bootstrap-server my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9092 --topic my-topic --from-beginning
 ```
 
 ### Setup Interconnect Router for SSL Client connections

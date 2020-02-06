@@ -23,13 +23,13 @@ To get things started, we need to install on RH-SSO on OCP.  For the purposes of
 2. Via the CLI, enter the following to generate a CA certificate (using `password` as the PEM passphrase):
 
 ```
-openssl req -new -newkey rsa:4096 -x509 -keyout xpaas.key -out xpaas.crt -days 365 -subj "/CN=redhat.com"
+openssl req -new -newkey rsa:4096 -x509 -keyout xpaas.key -out xpaas.crt -days 365 -subj "/CN=secure-sso.streams-oauth.svc"
 ```
 
 3. Via the CLI, generate a CA certificate for the HTTPS keystore (using `password` as the keystore password):
 
 ```
-keytool -genkeypair -keyalg RSA -keysize 2048 -dname "CN=redhat.com" -alias jboss -keystore keystore.jks
+keytool -genkeypair -keyalg RSA -keysize 2048 -dname "CN=secure-sso.streams-oauth.svc.cluster.local" -alias jboss -keystore keystore.jks -ext SAN=dns:secure-sso.streams-oauth.svc,dns:secure-sso.streams-oauth.svc.cluster.local
 ```
 
 4. Generate a CSR for the HTTPS keystore (using `password` as the keystore password):
@@ -71,7 +71,7 @@ keytool -import -file xpaas.crt -alias xpaas.ca -keystore truststore.jks
 10. Create the secrets for the HTTPS and JGroups keystores:
 
 ```
-oc create secret sso-app-secret keystore.jks jgroups.jceks truststore.jks
+oc secret new sso-app-secret keystore.jks jgroups.jceks truststore.jks
 ```
 
 11. Link the secrets to the default service account:
@@ -200,163 +200,130 @@ cat << EOF | oc create -f -
 apiVersion: kafka.strimzi.io/v1alpha1
 kind: Kafka
 metadata:
-  name: my-cluster
+ name: my-cluster
 spec:
-  kafka:
-    replicas: 1
-    listeners:
-      external:
-        type: route
-      plain: {}
-      tls:
-        authentication:
-          type: oauth
-          clientId: kafka-broker
-          clientSecret:
-            key: secret
-            secretName: broker-oauth-secret
-          validIssuerUri: https://secure-sso-streams-oauth.apps.tiaa-ad83.open.redhat.com/auth/realms/master
-          jwksEndpointUri: https://secure-sso-streams-oauth.apps.tiaa-ad83.open.redhat.com/auth/realms/master/protocol/openid-connect/certs
-          userNameClaim: preferred_username
-          tlsTrustedCertificates:
-          - secretName: ca-truststore
-            certificate: xpaas.crt
-    storage:
-      type: ephemeral
-  zookeeper:
-    replicas: 1
-    storage:
-      type: ephemeral
-  entityOperator:
-    topicOperator: {}
-    userOperator: {}
+ kafka:
+   replicas: 1
+   listeners:
+     external:
+       type: route
+     plain: {}
+     tls:
+       authentication:
+         type: oauth
+         clientId: kafka-broker
+         clientSecret:
+           key: secret
+           secretName: broker-oauth-secret
+         validIssuerUri: https://secure-sso.streams-oauth.svc.cluster.local:8443/auth/realms/master
+         jwksEndpointUri: https://secure-sso.streams-oauth.svc.cluster.local:8443/auth/realms/master/protocol/openid-connect/certs
+         userNameClaim: preferred_username
+         tlsTrustedCertificates:
+         - secretName: ca-truststore
+           certificate: xpaas.crt
+   storage:
+     type: ephemeral
+ zookeeper:
+   replicas: 1
+   storage:
+     type: ephemeral
+ entityOperator:
+   topicOperator: {}
+   userOperator: {}
 EOF
 ```
 
-7. Once both Kafka and Zookeeper pods have started, attempt sending a few test messages via port 9092 using local kafka client pods:
+7. Once both Kafka and Zookeeper pods have started, we can create a Kafka client shell pod to test the OAUTH2 connectivity and produce / consume messages.  First we need to export the CA cert for the kafka client:
 
 ```
-oc run kafka-producer -ti --image=registry.redhat.io/amq7/amq-streams-kafka-23:1.3.0 --rm=true --restart=Never -- bin/kafka-console-producer.sh --broker-list my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9092 --topic my-topic
-
-oc run kafka-consumer -ti --image=registry.redhat.io/amq7/amq-streams-kafka-23:1.3.0 --rm=true --restart=Never -- bin/kafka-console-consumer.sh --bootstrap-server my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9092 --topic my-topic --from-beginning
+oc get secret ca-truststore -n streams-oauth -o yaml | grep xpaas.crt | awk '{print $2}' | base64 --decode > kafka.crt
 ```
 
-
-### Setup Interconnect Router for SSL Client connections
-
-This procedure sets up PLAIN SSL for clients connecting via the router.  The router contains autolinks to a couple of static queues (queue.foo and queue.grs).  The router will loadbalance between the active/passive master/slave pair, depending on which is active.
-
-1. Install the Interconnect Router on RHEL 7 as per the [instructions](https://access.redhat.com/documentation/en-us/red_hat_jboss_amq/7.0/html/using_amq_interconnect/installation)
-
-2. Follow the instructions to setup an SSL profile from the [documentation](https://access.redhat.com/documentation/en-us/red_hat_jboss_amq/7.0/html/using_amq_interconnect/security#setting_up_ssl_for_encryption_and_authentication).  I used openssl to generate my cacerts and keystores: `openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -days 365 -out certificate.pem`.
-
-3. Copy the `/conf/ic/qdrouterd.conf` to your RHEL server.
-
-4. Update the qdrouterd.conf sslProfile section to include the correct path to your keys and keystores created in step 2.
-
-5. Startup your master/slave brokers.  You should see the following in the router log indicating the connection to the master broker is active:
+8. Create a kafka client truststore and import both the CA and client certs :
 
 ```
-Fri Nov 10 13:17:52 2017 ROUTER_CORE (info) Auto Link Activated 'autoLink/0' on connection master
-Fri Nov 10 13:17:52 2017 ROUTER_CORE (info) Auto Link Activated 'autoLink/1' on connection master
-Fri Nov 10 13:17:52 2017 ROUTER_CORE (info) Auto Link Activated 'autoLink/2' on connection master
-Fri Nov 10 13:17:52 2017 ROUTER_CORE (info) Auto Link Activated 'autoLink/3' on connection master
+keytool -keystore kafka-client-truststore.p12 -storetype PKCS12 -alias ca -storepass password -keypass password -import -file xpaas.crt -noprompt
+keytool -keystore kafka-client-truststore.p12 -storetype PKCS12 -alias kafka -storepass password -keypass password -import -file kafka.crt -noprompt
 ```
 
-6. Send a test message to the master node by issuing the following command:
+9. Create a new secret, `kafka-client-truststore`, that contains the necessary client certs:
 
 ```
-qsend amqps://127.0.0.1:5672/queue.foo -m Master
+oc create secret generic kafka-client-truststore -n streams-oauth --from-file=./kafka-client-truststore.p12
 ```
 
-7. Login to the Master node HawtIO app.  You should see the message in the queue.foo by browsing.
-
-8.  Failover to the Slave broker by killing the Master.  The following should appear in the router logs:
+10. Create the kafka client shell pod:
 
 ```
-Fri Nov 10 13:21:34 2017 ROUTER_CORE (info) Auto Link Deactivated 'autoLink/0' on connection master
-Fri Nov 10 13:21:34 2017 ROUTER_CORE (info) Auto Link Deactivated 'autoLink/1' on connection master
-Fri Nov 10 13:21:34 2017 ROUTER_CORE (info) Auto Link Deactivated 'autoLink/2' on connection master
-Fri Nov 10 13:21:34 2017 ROUTER_CORE (info) Auto Link Deactivated 'autoLink/3' on connection master
-Fri Nov 10 13:21:34 2017 ROUTER_CORE (info) Auto Link Activated 'autoLink/4' on connection slave
-Fri Nov 10 13:21:34 2017 ROUTER_CORE (info) Auto Link Activated 'autoLink/5' on connection slave
-Fri Nov 10 13:21:34 2017 ROUTER_CORE (info) Auto Link Activated 'autoLink/6' on connection slave
-Fri Nov 10 13:21:34 2017 ROUTER_CORE (info) Auto Link Activated 'autoLink/7' on connection slave
+cat << EOF | oc create -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kafka-client-shell
+spec:
+  containers:
+  - name: kafka-client-shell
+    image: strimzi/kafka:0.14.0-kafka-2.3.0
+    command: ["/bin/bash"]
+    args: [ "-c", 'for((i=0;;i+=1)); do echo "Up time: \$i min" && sleep 60; done' ]
+    env:
+    - name: CLASSPATH
+      value: /opt/kafka/libs/kafka-oauth-client-*:/opt/kafka/libs/kafka-oauth-common-*
+    - name: OAUTH_TOKEN_ENDPOINT_URI
+      value: https://secure-sso.streams-oauth.svc.cluster.local:8443/auth/realms/master/protocol/openid-connect/token
+    volumeMounts:
+    - name: truststore
+      mountPath: "/opt/kafka/certificates"
+      readOnly: true
+  volumes:
+  - name: truststore
+    secret:
+      secretName: kafka-client-truststore
+EOF
 ```
 
-9. Send a test message to the slave node by issuing the following command:
+11.  Open the shell via the CLI:
 
 ```
-qsend amqps://127.0.0.1:5672/queue.foo -m Slave
+oc exec -n streams-oauth -ti kafka-client-shell /bin/bash
 ```
 
-### Setup LDAP connection to IC Router
+12. Via the CLI, start the kafka-producer (but be sure to update OAUTH_CLIENT_SECRET with the value from kafka-producer in RH-SSO):
 
-1. Install the necessary cyrus-sasl libraries required by the router and also set up the listener.  The
-`cyrus-sasl` and `cyrus-sasl-plain` libraries need to be installed (`yum install cyrus-sasl cyrus-sasl-plain`). The client sends the user name and password in clear to the Router. Hence, in a production environment, this client-router communication needs to be done over a TLS connection.
-
-Setup the following listener in the router's config file (this is the config file you use to start the router) - port number can be to your choosing:
 ```
-listener {
-    addr: 0.0.0.0
-    port: 15677
-    role: normal
-    authenticatePeer: yes
-    saslMechanisms: PLAIN
-}
+export OAUTH_CLIENT_ID=kafka-producer
+export OAUTH_CLIENT_SECRET=<SECRET_FOR_KAFKA_PRODUCER_FROM_KEYCLOAK_CONSOLE>
+export PASSWORD=password
+export KAFKA_OPTS=" \
+  -Djavax.net.ssl.trustStore=/opt/kafka/certificates/kafka-client-truststore.p12 \
+  -Djavax.net.ssl.trustStorePassword=$PASSWORD \
+  -Djavax.net.ssl.trustStoreType=PKCS12"
+
+  bin/kafka-console-producer.sh --broker-list \
+    my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9093 --topic my-topic \
+    --producer-property 'security.protocol=SASL_SSL' \
+    --producer-property 'sasl.mechanism=OAUTHBEARER' \
+    --producer-property 'sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required;' \
+    --producer-property 'sasl.login.callback.handler.class=io.strimzi.kafka.oauth.client.JaasClientOauthLoginCallbackHandler'  
 ```
-Notice that this sets up the Router listener to use PLAIN as the the only mechanism used to communicate with the client. PLAIN is used because the user name and password needs to be passed in clear to the PAM authentication module.
 
-2. Configure Dispatch Router to use a program called saslauthd to connect to SSSD via PAM (Pluggable Authentication Modules).
-The sasl config file is usually found in the /etc/sasl2/qdrouterd.conf file. Add the following properties to this file:
+13. Via a separate CLI window, start the kafka-consumers (but be sure to update OAUTH_CLIENT_SECRET with the value from kafka-consumer in RH-SSO):
+
 ```
-pwcheck_method: saslauthd
-auxprop_plugin:pam
-mech_list: PLAIN
+export OAUTH_CLIENT_ID=kafka-consumer
+export OAUTH_CLIENT_SECRET=<SECRET_FOR_KAFKA_CONSUMER_FROM_KEYCLOAK_CONSOLE>
+export PASSWORD=password
+export KAFKA_OPTS=" \
+  -Djavax.net.ssl.trustStore=/opt/kafka/certificates/kafka-client-truststore.p12 \
+  -Djavax.net.ssl.trustStorePassword=$PASSWORD \
+  -Djavax.net.ssl.trustStoreType=PKCS12"
+
+  bin/kafka-console-consumer.sh --bootstrap-server \
+    my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9093 --topic my-topic --from-beginning \
+    --consumer-property 'security.protocol=SASL_SSL' \
+    --consumer-property 'sasl.mechanism=OAUTHBEARER' \
+    --consumer-property 'sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required;' \
+    --consumer-property 'sasl.login.callback.handler.class=io.strimzi.kafka.oauth.client.JaasClientOauthLoginCallbackHandler'
 ```
-Notice that the `pwcheck_method` is set to `saslauthd` which is a program that is installed as part of the `cyrus-sasl` library installation (`yum install cyrus-sasl`). `saslauthd` is used to supply the user name and password to the pam module. Notice here that the `auxprop_plugin` is set to pam which instructs cyrus-sasl to enable authentication using PAM via saslauthd. The `mech_list` is set to `PLAIN`  to match the mech_list in step 1.
 
-Make sure that the `/etc/sysconfig/saslauthd` file contains
-`MECH=pam`
-
-This enables saslauthd to use PAM.
-
-3. Configure PAM
-Every application has to have its own config file in the `/etc/pam.d/` folder. The config file for Qpid Dispatch is called amqp. Open or create the `/etc/pam.d/amqp` file and add the following to it -
-`#%PAM-1.0
-auth    required  pam_securetty.so
-auth    required pam_nologin.so
-account required pam_unix.so
-session required pam_unix.so
-`
-What each of the above lines means is explained in detail in Section 2.2 [here](docs/pam-step-3.pdf)
-The above PAM configuration is not production grade but works in my situation.
-
-4. Configure PAM service on SSSD - This instructs PAM to use SSSD to retrieve user information and is dealt with in detail in Section 30.3.2 [here](docs/pam-step-4.pdf) (I followed all steps in this link)
-(SSSD is already installed on RHEL 7 machines)
-
-5. Install Redhat IdM (Active Directory(AD) and any LDAP server can be used instead of Redhat IdM) in Section 2.3 [here](docs/pam-step-5.pdf).
-Skip this step if you are not using IdM
-
-6. Ask SSSD to discover AD or IdM services `realm discover test.example.com` - This instructs SSSD to discover a directory service running on the host test.example.com.
-Use - `realm discover --server-software=active-directory test.example.com` - to discovery AD
-If the discovery is successful, to join the system SSSD to an identity domain, use the realm join command and specify the domain name:
-```
-realm join test.example.com
-```
-SSSD will successfully join the realm. Test the whole setup with the testsaslauthd program that comes as part of the cyrus-sasl installation
-```
-[root@amq01 /]# testsaslauthd -u test -p test -r LAB.ENG.RDU2.REDHAT.COM -s amqp
-0: OK "Success."
-```
-If you don't get "OK", you are in trouble.
-
-To troubleshoot watch the output of `journalctl -f` as you run `testsaslauthd`
-
-7. In summary, now you have enabled SASL in Qpid Dispatch Router to talk to PAM which in turn talks to SSSD which in turn can talk to any directory service like AD, LDAP or IdM.
-
-8. Finally start the router and run qdstat
-
-`reset; PN_TRACE_FRM=1 qdstat -b amqps://127.0.0.1:15677 -c --sasl-mechanisms=PLAIN --sasl-username=max@LAB.ENG.RDU2.REDHAT.COM --sasl-password=Abcd1234`
-
-Note here again the the saslMechanisms is set to PLAIN and the realm (LAB.ENG.RDU2.REDHAT.COM) is included as part of the user name.
+If all goes well, there should be no SSL handshake errors and you should be able to send and receive messages.

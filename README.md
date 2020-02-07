@@ -203,7 +203,7 @@ metadata:
  name: my-cluster
 spec:
  kafka:
-   replicas: 1
+   replicas: 3
    listeners:
      external:
        type: route
@@ -224,7 +224,7 @@ spec:
    storage:
      type: ephemeral
  zookeeper:
-   replicas: 1
+   replicas: 3
    storage:
      type: ephemeral
  entityOperator:
@@ -236,7 +236,7 @@ EOF
 7. Once both Kafka and Zookeeper pods have started, we can create a Kafka client shell pod to test the OAUTH2 connectivity and produce / consume messages.  First we need to export the CA cert for the kafka client:
 
 ```
-oc get secret ca-truststore -n streams-oauth -o yaml | grep xpaas.crt | awk '{print $2}' | base64 --decode > kafka.crt
+oc get secret my-cluster-cluster-ca-cert -n streams-oauth -o yaml | grep ca.crt | awk '{print $2}' | base64 --decode > kafka.crt
 ```
 
 8. Create a kafka client truststore and import both the CA and client certs :
@@ -300,7 +300,7 @@ export KAFKA_OPTS=" \
   -Djavax.net.ssl.trustStoreType=PKCS12"
 
   bin/kafka-console-producer.sh --broker-list \
-    my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9093 --topic my-topic \
+    my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9093 --topic simon-topic \
     --producer-property 'security.protocol=SASL_SSL' \
     --producer-property 'sasl.mechanism=OAUTHBEARER' \
     --producer-property 'sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required;' \
@@ -319,7 +319,7 @@ export KAFKA_OPTS=" \
   -Djavax.net.ssl.trustStoreType=PKCS12"
 
   bin/kafka-console-consumer.sh --bootstrap-server \
-    my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9093 --topic my-topic --from-beginning \
+    my-cluster-kafka-bootstrap.streams-oauth.svc.cluster.local:9093 --topic simon-topic --from-beginning \
     --consumer-property 'security.protocol=SASL_SSL' \
     --consumer-property 'sasl.mechanism=OAUTHBEARER' \
     --consumer-property 'sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required;' \

@@ -4,6 +4,8 @@ This project demonstrates how to setup and configure an AMQ Streams cluster on O
 
 ![AMQ Streams RBAC Enforcement with OAUTH2 Diagram](images/streams-oauth.png)
 
+The Authorization portion using LDAP to manage groups in available in community Strimzi, and will be updated here in the future.
+
 ## Prerequisites
 
 The following product / OS prerequisities exist:
